@@ -69,11 +69,10 @@ class decoder(object):
             pk.dump(comunes, open('comunes.pk', 'wb'))
             pk.dump(self.maps, open("maps.pk", "wb"))
             pk.dump(self.categoricals, open("categoricals.pk", "wb"))
-
-    def decodePass(self, key, data):
-        return key, data
-
-    def decodeRow(self, row):
+    #
+    # row decoder
+    #
+    def decode___row(self, row):
         new_row = pd.Series()
         for key,col in row.iteritems():
             key = key.lower()
@@ -84,7 +83,7 @@ class decoder(object):
                     self.funcnonfund.append('decode_' + key)
                     print('function not found: ' + 'def decode_' + key + '(self, key, column):')
                 #decodeFunction = self.decodePass
-                decodeFunction = self.decodeVoid
+                decodeFunction = self.decode__void
 
             try:
                 name, data = decodeFunction(key, col)
@@ -101,7 +100,109 @@ class decoder(object):
         for col in self.extra_cols.keys():
             new_row[col] = self.extra_cols[col]
         return new_row
+    #
+    # abstract decoders
+    #
+    def decode__void(self, key=None, column=None):
+        return False, None
 
+    def decode__pass(self, key, data):
+        return key, data
+
+    def decode__int(self, key, column, null_values=None):
+        # null values init
+        if type(column) != str:
+            try:
+                if np.isnan(column):
+                    return key, None
+            except TypeError as e:
+                self.log('can\'t run np.isnan on: {}'.format(e))
+        if not null_values:
+            null_values = []
+        if column in null_values:
+            return key, None
+
+        try:
+            return key, int(column)
+        except TypeError as e:
+            self.log('Type error: {}'.format(e))
+            self.log_invalid_type(key, column)
+            return key, None
+
+    def decode__date(self, key, year, cached_month, cached_day, cached_century=None):
+        if type(year) != str:
+            if np.isnan(year):
+                return key, None
+            if int(year) == 0:
+                return key, None
+        if cached_century:
+            try:
+                year = self.cache['born_century'] * 100 + int(year)
+            except:
+                self.log('Can\'t build a year from {}*100 + int({})'.format(self.cache['born_century'], year))
+        else:
+            year = int(year)
+        try:
+            date = datetime.date(year, self.cache[cached_month], self.cache[cached_day])
+        except:
+            self.log('Invalid date: datetime.date({}, {}, {})'.format(year,
+                                                                 self.cache[cached_month],
+                                                                 self.cache[cached_day]))
+            date = None
+        return key, date
+
+    def decode__categorical(self, key, value, name, key_make_string=False, key_make_int=False, map_name=None, cat_from_map=False):
+        if type(value) != str:
+            if np.isnan(value):
+                return name, None
+        if map_name is None:
+            map_name = name
+        if cat_from_map:
+            cat_name = map_name
+        else:
+            cat_name = name
+        try:
+            if key_make_int:
+                value = int(value)
+            if key_make_string:
+                value = str(value)
+            return name,\
+                pd.Categorical(self.maps[map_name].loc[value].value, dtype=self.categoricals[cat_name])
+        except:
+            self.log_invalid_type('{} ({}) '.format(name, key), value, map_name)
+            return name, None
+
+    def decode__actividad(self, key, column):
+        if type(column) != str:
+            if np.isnan(column):
+                return key, None
+        try:
+            self.cache[key] = int(column)
+            return self.decode__categorical(key, column, key, True, True, map_name='activity', cat_from_map=True)
+        except:
+            self.log_invalid_type(key, column)
+            return key, None
+
+    def decode__ocupation(self, key, column, cached_activity):
+        if type(column) != str:
+            if np.isnan(column):
+                return key, None
+        if not cached_activity in self.cache:
+            return key, None
+        try:
+            value = '{}.{}'.format(self.cache[cached_activity], column)
+        except:
+            self.log('Weird shit happening here :(')
+            return key, None
+        try:
+            return self.decode__categorical(key, value, key, map_name='ocupation', cat_from_map=True)
+        except TypeError as e:
+            self.log(e)
+            self.log_invalid_type(key, value)
+            return key, None
+    #
+    # fields decoders
+    #
     def decode_dia_nac(self, key, column):
         try:
             self.cache['born_day'] = int(column)
@@ -125,92 +226,89 @@ class decoder(object):
         return False, None
 
     def decode_ano2_nac(self, key, column):
-        return self.decodeDate('bird_date', column, 'born_month', 'born_day', 'born_century')
-        try:
-            born_year = self.cache['born_century'] * 100 + int(column)
-            bird_date = datetime.date(born_year, self.cache['born_month'], self.cache['born_day'])
-        except:
-            self.log('Invalid date: datetime.date({}*100 + {}, {}, {})'.format(self.cache['born_century'], column, column,self.cache['born_month'], self.cache['born_day']))
-            bird_date = self.null
-        return 'bird_date', bird_date
-
-    def decodeDate(self, key, year, cached_month, cached_day, cached_century=None):
-        if type(year) != str:
-            if np.isnan(year):
-                return key, None
-        if cached_century:
-            try:
-                year = self.cache['born_century'] * 100 + int(year)
-            except:
-                self.log('Can\'t build a year from {}*100 + int({})'.format(self.cache['born_century'], year))
-        else:
-            year = int(year)
-        try:
-            date = datetime.date(year, self.cache[cached_month], self.cache[cached_day])
-        except:
-            self.log('Invalid date: datetime.date({}, {}, {})'.format(year,
-                                                                 self.cache[cached_month],
-                                                                 self.cache[cached_day]))
-            date = None
-        return key, date
+        return self.decode__date('bird_date', column, 'born_month', 'born_day', 'born_century')
 
     def decode_sexo(self, key, column):
-        return self.decodeCategorical(key, column, 'assigned_sex', True, True)
+        return self.decode__categorical(key, column, 'assigned_sex', True, True)
 
     def decode_est_civil(self, key, column):
-        return self.decodeCategorical(key, column, 'marital_status', True, True)
+        return self.decode__categorical(key, column, 'marital_status', True, True)
 
     def decode_edad_tipo(self, key, column):
-        return self.decodeCategorical(key, column, 'age_type', True, True)
+        return self.decode__categorical(key, column, 'age_type', True, True)
 
     def decode_peso(self, key, column):
-        return self.decodeInt('born_weight_grams', column, ['9999',])
+        return self.decode__int('born_weight_grams', column, ['9999', ])
 
     def decode_gestacion(self, key, column):
-        return self.decodeInt('gestation_age_weeks', column)
-
-    def decodeInt(self, key, column, null_values=None):
-        # null values init
-        if type(column) != str:
-            try:
-                if np.isnan(column):
-                    return key, None
-            except TypeError as e:
-                self.log('can\'t run np.isnan on: {}'.format(e))
-        if not null_values:
-            null_values = []
-        if column in null_values:
-            return key, None
-
-        try:
-            return key, int(column)
-        except TypeError as e:
-            self.log('Type error: {}'.format(e))
-            self.log_invalid_type(key, column)
-            return key, None
+        return self.decode__int('gestation_age_weeks', column)
 
     def decode_edad_cant(self, key, column):
-        return self.decodeInt('age_amount', column)
+        return self.decode__int('age_amount', column)
 
     def decode_curso_ins(self, key, column):
-        return self.decodeInt('formal_education_years', column)
+        return self.decode__int('formal_education_years', column)
+
+    def decode_curso_m(self, key, column):
+        return self.decode__int('mother_formal_education_years', column)
+
+    def decode_curso_ma(self, key, column):
+        return self.decode__int('mother_formal_education_years', column)
+
+    def decode_curs_ins_m(self, key, column):
+        return self.decode__int('mother_formal_education_years', column)
+
+    def decode_curso_p(self, key, column):
+        return self.decode__int('father_formal_education_years', column)
+
+    def decode_curso_pa(self, key, column):
+        return self.decode__int('father_formal_education_years', column)
+
+    def decode_curs_ins_p(self, key, column):
+        return self.decode__int('father_formal_education_years', column)
 
     def decode_nivel_ins(self, key, column):
-        return self.decodeCategorical(key, column, 'formal_education_level', True, True)
+        return self.decode__categorical(key, column, 'formal_education_level', True, True)
+
+    def decode_nive_ins_m(self, key, column):
+        return self.decode__categorical(key, column, 'formal_education_level', True, True)
+
+    def decode_nivel_m(self, key, column):
+        return self.decode__categorical(key, column, 'mother_formal_education_level', True, True, 'formal_education_level', True)
+
+    def decode_nivel_ma(self, key, column):
+        return self.decode_nivel_m(key, column)
+
+    def decode_nivel_p(self, key, column):
+        return self.decode__categorical(key, column, 'father_formal_education_level', True, True, 'formal_education_level', True)
+
+    def decode_nivel_pa(self, key, column):
+        return self.decode__categorical(key, column, 'father_formal_education_level', True, True, 'formal_education_level', True)
+
+    def decode_nive_ins_p(self, key, column):
+        return self.decode__categorical(key, column, 'father_formal_education_level', True, True, 'formal_education_level', True)
 
     def decode_actividad(self, key, column):
-        if type(column) != str:
-            if np.isnan(column):
-                return key, None
-        try:
-            self.cache['activity'] = int(column)
-            return self.decodeCategorical(key, column, 'activity', True, True)
-        except:
-            self.log_invalid_type(key, column)
-            return 'activity', None
+        return self.decode__actividad('activity', column)
+
+    def decode_activ(self, key, column):
+        return self.decode__actividad('activity', column)
 
     def decode_categoria(self, key, column):
-        return self.decodeCategorical(key, column, 'occupational_category', True, True)
+        return self.decode__categorical(key, column, 'occupational_category', True, True)
+
+    def decode_categ(self, key, column):
+        return self.decode__categorical(key, column, 'occupational_category', True, True)
+
+    def decode_categ_m(self, key, column):
+        return self.decode__categorical(key, column, 'mother_occupational_category', True, True,
+                                        map_name='occupational_category', cat_from_map=True)
+
+    def decode_catego_m(self, key, column):
+        return self.decode_categ_m(key, column)
+
+    def decode_categ_ma(self, key, column):
+        return self.decode_categ_m(key, column)
 
     def decode_dia_def(self, key, column):
         try:
@@ -220,6 +318,9 @@ class decoder(object):
             self.log_invalid_type(key, column)
             return False, None
 
+    def decode_def_dia(self, key, column):
+        return self.decode_dia_def(key, column)
+
     def decode_mes_def(self, key, column):
         try:
             self.cache['deacease_month'] = int(column)
@@ -228,38 +329,55 @@ class decoder(object):
             self.log_invalid_type(key, column)
             return False, None
 
+    def decode_def_mes(self, key, column):
+        return self.decode_mes_def( key, column)
+
     def decode_ano_def(self, key, column):
-        try:
-            return 'deacease_date', datetime.date(int(column), self.cache['deacease_month'], self.cache['deacease_day'])
-        except:
-            self.log('Invalid value for "deacease_date": datetime.date({}, {}, {})'.format(int(column), self.cache['deacease_month'], self.cache['deacease_day']))
-            return False, None
+        return self.decode__date('bird_date', column, 'deacease_month', 'deacease_day')
+
+    def decode_def_ano(self, key, column):
+        return self.decode_ano_def(key, column)
 
     def decode_lugar_def(self, key, column):
         # Remove full address (never should have been public)
         if self.dataframe_year == 2011:
-            return self.decodeVoid()
+            return self.decode__void()
         else:
-            return self.decodeCategorical(key, column, 'decease_place', True, True)
+            return self.decode__categorical(key, column, 'decease_place', True, True)
+
+    def decode_def_local(self, key, column):
+        return self.decode_lugar_def(key, column)
+
+    def decode_local_def(self, key, column):
+        return self.decode_lugar_def(key, column)
 
     def decode_reg_res(self, key, column):
-        return self.decodeCategorical(key, column, 'region', True,  True)
+        return self.decode__categorical(key, column, 'region', True, True)
 
     def decode_serv_res(self, key, column):
-        return self.decodeCategorical(key, column, 'health_service', True, True)
+        return self.decode__categorical(key, column, 'health_service', True, True)
+
+    def decode_res_serv(self, key, column):
+        return self.decode_serv_res(key, column)
+
+    def decode_res_reg(self, key, column):
+        return self.decode_serv_res(key, column)
 
     def decode_comuna(self, key, column):
         if self.dataframe_year <= 1999:
-            return self.decodeCategorical(key, column, 'comune', False, True, map_name='comunes_1812_1999')
+            return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_1812_1999')
         elif self.dataframe_year >= 2000 and self.dataframe_year <= 2007:
-            return self.decodeCategorical(key, column, 'comune', False, True, map_name='comunes_2000_2007')
+            return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2000_2007')
         elif self.dataframe_year >= 2008 and self.dataframe_year <= 2009:
-            return self.decodeCategorical(key, column, 'comune', False, True, map_name='comunes_2008_2009')
+            return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2008_2009')
         elif self.dataframe_year >= 2010 :
-            return self.decodeCategorical(key, column, 'comune', False, True, map_name='comunes_2010_2018')
+            return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2010_2018')
 
     def decode_urb_rural(self, key, column):
-        return self.decodeCategorical(key, column, 'territory_class', True, True)
+        return self.decode__categorical(key, column, 'territory_class', True, True)
+
+    def decode_urba_rural(self, key, column):
+        return self.decode__categorical(key, column, 'territory_class', True, True)
 
     def decode_diag1(self, key, column):
         code = column.lower()
@@ -267,76 +385,64 @@ class decoder(object):
             if(code[-1] == 'x'):
                 code = code[0:-1]
         #print('{} {}'.format(column, type(column)))
-        return self.decodeVoid()
+        return self.decode__void()
 
     def decode_diag2(self, key, column):
-        return self.decodeVoid()
+        return self.decode__void()
 
     def decode_at_medica(self, key, column):
-        return self.decodeCategorical(key, column, 'medical_attention', True, True)
+        return self.decode__categorical(key, column, 'medical_attention', True, True)
 
     def decode_cal_medico(self, key, column):
-        return self.decodeCategorical(key, column, 'reporter_role', True, True)
+        return self.decode__categorical(key, column, 'reporter_role', True, True)
 
     def decode_cod_menor(self, key, column):
-        return self.decodeCategorical(key, column, 'toddler', True, True)
+        return self.decode__categorical(key, column, 'toddler', True, True)
 
     def decode_nutritivo(self, key, column):
-        return self.decodeCategorical(key, column, 'nutrition_status', True, True)
+        return self.decode__categorical(key, column, 'nutrition_status', True, True)
 
     def decode_edad_m(self, key, column):
-        return self.decodeInt('mother_age', column)
+        return self.decode__int('mother_age', column)
+
+    def decode_edad_p(self, key, column):
+        return self.decode__int('father_age', column)
+
+    def decode_edad_padre(self, key, column):
+        return self.decode__int('father_age', column)
 
     def decode_est_civ_m(self, key, column):
-        return self.decodeCategorical(key, column, 'mother_marital_status', True, True, 'marital_status', True)
+        return self.decode__categorical(key, column, 'mother_marital_status', True, True, 'marital_status', True)
+
+    def decode_est_civi_m(self, key, column):
+        return self.decode_est_civ_m(key, column)
+
+    def decode_est_civ_ma(self, key, column):
+        return self.decode_est_civ_m(key, column)
 
     def decode_ocupacion(self, key, column):
-        return self.decodeOcupation('ocupation', column, self.cache['activity'])
-        if not 'activity' in self.cache:
-            self.log('No activity to make a ocupation ({})'.format(column))
-            return 'ocupation', None
-        try:
-            value = '{}.{}'.format(self.cache['activity'], column)
-        except:
-            self.log('Weird shit happening here :(')
-            return 'ocupation', None
-        try:
-            return self.decodeCategorical(key, value, 'ocupation', cat_from_map=True)
-        except TypeError as e:
-            self.log(e)
-            self.log_invalid_type(key, value)
-            return 'ocupation', None
+        return self.decode__ocupation('ocupation', column, self.cache['activity'])
 
-    def decodeOcupation(self, key, column, cached_activity):
-        if cached_activity == None:
-            return key, None
-        try:
-            value = '{}.{}'.format(cached_activity, column)
-        except:
-            self.log('Weird shit happening here :(')
-            return key, None
-        try:
-            return self.decodeCategorical(key, value, key, map_name='ocupation',cat_from_map=True)
-        except TypeError as e:
-            self.log(e)
-            self.log_invalid_type(key, value)
-            return key, None
-
+    def decode_ocupa(self, key, column):
+        return self.decode__ocupation('ocupation', column, self.cache['activity'])
 
     def decode_hij_vivos(self, key, column):
-        return self.decodeInt('mother_alive_childs', column)
+        return self.decode__int('mother_alive_childs', column)
 
     def decode_hij_fall(self, key, column):
-        return self.decodeInt('mother_deaceased_childs', column)
+        return self.decode__int('mother_deaceased_childs', column)
 
     def decode_hij_mort(self, key, column):
-        return self.decodeInt('mother_stillbirth_childs', column)
+        return self.decode__int('mother_stillbirth_childs', column)
 
     def decode_hij_total(self, key, column):
-        return self.decodeInt('mother_total_childs', column)
+        return self.decode__int('mother_total_childs', column)
 
     def decode_parto_abor(self, key, column):
-            return self.decodeCategorical(key, column, 'bird_abortion', True, True)
+        return self.decode__categorical(key, column, 'bird_abortion', True, True)
+
+    def decode_part_abort(self, key, column):
+        return self.decode_parto_abor(key, column)
 
     def decode_dia_parto(self, key, column):
         try:
@@ -347,6 +453,9 @@ class decoder(object):
             self.extra_cols['mother_last_bird_accuracy'] = 'Month'
         return False, None
 
+    def decode_part_dia(self, key, column):
+        return self.decode_dia_parto(key, column)
+
     def decode_mes_parto(self, key, column):
         try:
             self.cache['mother_last_bird_month'] = int(column)
@@ -356,70 +465,48 @@ class decoder(object):
             self.extra_cols['mother_last_bird_accuracy'] = 'Year'
         return False, None
 
+    def decode_part_mes(self, key, column):
+        return self.decode_mes_parto(key, column)
+
     def decode_ano_parto(self, key, column):
-        if type(column) != str:
-            if np.isnan(column):
-                return key, None
-        try:
-            return 'mother_last_bird', datetime.date(int(column), self.cache['mother_last_bird_month'], self.cache['mother_last_bird_day'])
-        except:
-            self.log('Invalid value for "mother_last_bird": datetime.date({}, {}, {})'.format(column, self.cache['mother_last_bird_month'], self.cache['mother_last_bird_day']))
-            return False, None
+        return self.decode__date('bird_date', column, 'mother_last_bird_month', 'mother_last_bird_day')
+
+    def decode_part_ano(self, key, column):
+        return self.decode_ano_parto(key, column)
 
     def decode_activ_m(self, key, column):
-        if type(column) != str:
-            if np.isnan(column):
-                return key, None
-        try:
-            self.cache['mother_activity'] = int(column)
-            return self.decodeCategorical(key, column, 'mother_activity', True, True)
-        except:
-            self.log_invalid_type(key, column)
-            return 'mother_activity', None
+        return self.decode__actividad('mother_activity', column)
+
+    def decode_activ_ma(self, key, column):
+        return self.decode__actividad('mother_activity', column)
+
+    def decode_activ_p(self, key, column):
+        return self.decode__actividad('father_activity', column)
+
+    def decode_activ_pa(self, key, column):
+        return self.decode__actividad('father_activity', column)
 
     def decode_ocupa_m(self, key, column):
-        if not 'mother_activity' in self.cache:
-            self.log('No activity to make a mother_occupation ({})'.format(column))
-            return 'mother_occupation', None
-        try:
-            value = '{}.{}'.format(self.cache['mother_activity'], column)
-        except:
-            self.log('Weird shit happening here :(')
-            return 'mother_occupation', None
-        try:
-            return self.decodeCategorical(key, value, 'mother_occupation', map_name='ocupation', cat_from_map=True)
-        except TypeError as e:
-            self.log(e)
-            self.log_invalid_type(key, value)
-            return 'mother_occupation', None
+        return self.decode__ocupation('ocupation', column, 'mother_activity')
+
+    def decode_ocupa_ma(self, key, column):
+        return self.decode__ocupation('ocupation', column, 'mother_activity')
+
+    def decode_ocupa_p(self, key, column):
+        return self.decode__ocupation('ocupation', column, 'father_activity')
+
+    def decode_ocupac_p(self, key, column):
+        return self.decode__ocupation('ocupation', column, 'father_activity')
+
+    def decode_ocupa_pa(self, key, column):
+        return self.decode__ocupation('ocupation', column, 'father_activity')
 
     def decode_origin(self, key, column):
-        return self.decodePass(key, column)
+        return self.decode__pass(key, column)
 
-    def decodeCategorical(self, key, value, name, key_make_string=False, key_make_int=False, map_name=None, cat_from_map=False):
-        if type(value) != str:
-            if np.isnan(value):
-                return name, None
-        if map_name is None:
-            map_name = name
-        if cat_from_map:
-            cat_name = map_name
-        else:
-            cat_name = name
-        try:
-            if key_make_int:
-                value = int(value)
-            if key_make_string:
-                value = str(value)
-            return name,\
-                pd.Categorical(self.maps[map_name].loc[value].value, dtype=self.categoricals[cat_name])
-        except:
-            self.log_invalid_type('{} ({}) '.format(name, key), value, map_name)
-            return name, None
-
-    def decodeVoid(self, key=None, column=None):
-        return False, None
-
+    #
+    # utilities
+    #
     def log(self, message, do_print=False):
         with open('dataDecode.log', 'a') as f:
             ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))

@@ -57,11 +57,11 @@ class dataLoad(object):
                 #     #print(key)
                 #     cdf[key] = pd.Series(dtype=value)
                 if self.load_test:
-                    cdf = cdf.sample(n=self.load_test, random_state=31173).apply(self.decoder.decodeRow, axis=1)
+                    cdf = cdf.sample(n=self.load_test, random_state=31173).apply(self.decoder.decode___row, axis=1)
                     # remove absolute duplicates
                     # check for all nulls
                 else:
-                    cdf = cdf.apply(self.decoder.decode_row, axis=1)
+                    cdf = cdf.apply(self.decoder.decode___row, axis=1)
 
                 self.log('Decoded {}: {}'.format(cdf.shape, file), True)
                 self.defunciones.append(cdf)
