@@ -3,6 +3,7 @@ from simpledbf import Dbf5
 import os
 import pandas_access as mdb
 import dataDecode as dd
+from time import gmtime, strftime
 
 
 class dataLoad(object):
@@ -47,21 +48,24 @@ class dataLoad(object):
                 load_function = getattr(self, 'load_' + ext[1:])
                 continue_var = True
             except AttributeError:
-                self.log('function not found: ' + 'load_' + ext[1:])
+                self.log('function not found: ' + 'load_' + ext[1:], True)
             if continue_var:
                 cdf = load_function(file)
-                self.log('Loaded: ' + file)
+                self.log('Loaded {}: {}'.format(cdf.shape, file), True)
                 cdf['origin'] = file
                 # for key, value in self.decoder.get_categoricals().items():
                 #     #print(key)
                 #     cdf[key] = pd.Series(dtype=value)
                 if self.load_test:
                     cdf = cdf.sample(n=self.load_test, random_state=31173).apply(self.decoder.decodeRow, axis=1)
+                    # remove absolute duplicates
+                    # check for all nulls
                 else:
                     cdf = cdf.apply(self.decoder.decode_row, axis=1)
+
+                self.log('Decoded {}: {}'.format(cdf.shape, file), True)
                 self.defunciones.append(cdf)
-                self.log(cdf.shape)
-                print(self.col_compare(cdf.columns))
+                self.log('columns comparison: {}'.format(self.col_compare(cdf.columns)))
         else:
             self.log(file + ' Not supported yet')
 
@@ -70,6 +74,7 @@ class dataLoad(object):
         return dbf.to_dataframe()
 
     def load_csv(self, file):
+        # TODO: check "NULL" values
         return pd.read_csv(self.base_path + file, sep=';', encoding='latin_1', low_memory=False)
 
     def load_mdb(self, file):
@@ -86,5 +91,11 @@ class dataLoad(object):
     def load_xlsx(self, file):
         return pd.read_excel(self.base_path + file)
 
-    def log(self, message):
-        print(message)
+    def log(self, message, do_print=False):
+        with open('dataLoad.log', 'a') as f:
+            f.write("{}: {}\n".format(strftime("%Y-%m-%d %H:%M:%S", gmtime()), message))
+        if do_print:
+            print(message)
+
+    def get_result(self):
+        return pd.concat(self.defunciones, sort=True)
