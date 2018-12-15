@@ -2,6 +2,7 @@ import numpy as np
 import datetime, time, sys
 import pandas as pd
 import pickle as pk
+from pandas.api.types import CategoricalDtype
 
 
 class decoder(object):
@@ -15,7 +16,24 @@ class decoder(object):
         self.cache = {}
         self.dataframe_year = None
         self.load_maps()
-        self.extra_cols = {}
+        self.prepend_cols = {
+            'comune':           None,
+            'diagnosis_source': None,
+            'origin':           'local',
+            # Missing on 2016
+            'toddler': None,
+        }
+        self.append_cols = {
+            'bird_date_accuracy':        'day',
+            'mother_last_bird_accuracy': 'day',
+            'deacease_date_accuracy': 'day',
+        }
+        # Ignored to decode
+        self.pre_build_cols = [
+            'bird_date',
+            'deacease_date',
+            'mother_last_bird',
+        ]
 
     def get_categoricals(self):
         return self.categoricals
@@ -26,13 +44,22 @@ class decoder(object):
     def load_maps(self):
         self.load_maps_general()
         self.load_maps_comunes()
+        self.load_maps_diagnoses()
 
+    def load_maps_diagnoses(self):
+        diagnoses = pd.read_csv(self.base_path + 'cie-10.csv')
+        # Remove descrption and create a dict in format: dict[code] = {'code_0': 'foo', 'code_1: 'bar', etc}
+        self.maps['diagnoses'] = diagnoses.drop(columns='description').set_index('code').to_dict('index')
 
     def load_maps_general(self):
+        # TODO: https://pandas.pydata.org/pandas-docs/stable/categorical.html#dtype-in-apply
+        # Load categorical codes from csv
         col_codes = pd.read_csv(self.base_path + 'columns_codes.csv', true_values='TRUE', false_values=['FALSE'])
         for type in col_codes.type.unique():
-            self.maps[type] = col_codes[col_codes.type == type].set_index('code').drop('type', axis=1)
-            self.categoricals[type] = pd.api.types.CategoricalDtype(self.maps[type].value.dropna().values)
+            # build a dictionary with shape: dic[code] = description
+            self.maps[type] = col_codes[col_codes.type == type].set_index('code').drop('type', axis=1).value.to_dict()
+            # build a pandas CategoricalDtype with ONLY the descriptions
+            self.categoricals[type] = CategoricalDtype(col_codes[col_codes.type == type].set_index('code').drop('type', axis=1).value.dropna().values)
 
     def load_maps_comunes(self):
         comunes = pd.read_excel(
@@ -44,22 +71,22 @@ class decoder(object):
         self.maps['comunes_1812_1999'] = comunes\
             .rename(columns={'Código Comuna hasta 1999': 'code'})\
             .set_index('code')\
-            .drop(columns=comunes.columns[1:4])
+            .drop(columns=comunes.columns[1:4]).value.to_dict()
 
         self.maps['comunes_2000_2007'] = comunes\
             .rename(columns={'Código Comuna desde 2000': 'code'})\
             .set_index('code')\
-            .drop(columns=comunes.columns[[0,2,3]])
+            .drop(columns=comunes.columns[[0,2,3]]).value.to_dict()
 
         self.maps['comunes_2008_2009'] = comunes\
             .rename(columns={'Código Comuna desde 2008': 'code'})\
             .set_index('code')\
-            .drop(columns=comunes.columns[[0, 1, 3]])
+            .drop(columns=comunes.columns[[0, 1, 3]]).value.to_dict()
 
         self.maps['comunes_2010_2018'] = comunes\
             .rename(columns={'Código Comuna desde 2010': 'code'})\
             .set_index('code')\
-            .drop(columns=comunes.columns[[0, 1, 2]])
+            .drop(columns=comunes.columns[[0, 1, 2]]).value.to_dict()
 
 
         self.categoricals['comune'] = pd.api.types.CategoricalDtype(comunes.dropna().value.values)
@@ -72,33 +99,48 @@ class decoder(object):
     #
     # row decoder
     #
-    def decode___row(self, row):
+    def decode___row(self, row, meta=None): #meta for dask compatibilty
         new_row = pd.Series()
+        # prepend cols
+        for col in self.prepend_cols.keys():
+            new_row[col] = self.prepend_cols[col]
+        # run decode_* functions to each column name
         for key,col in row.iteritems():
             key = key.lower()
-            try:
-                decodeFunction = getattr(self, 'decode_' + key)
-            except AttributeError:
-                if not 'decode_' + key in self.funcnonfund:
-                    self.funcnonfund.append('decode_' + key)
-                    print('function not found: ' + 'def decode_' + key + '(self, key, column):')
-                #decodeFunction = self.decodePass
-                decodeFunction = self.decode__void
+            if not key in self.pre_build_cols:
+                try:
+                    decodeFunction = getattr(self, 'decode_' + key)
+                except AttributeError:
+                    if not 'decode_' + key in self.funcnonfund:
+                        self.funcnonfund.append('decode_' + key)
+                        print('function not found: ' + 'def decode_' + key + '(self, key, column):')
+                    # Use self.decode__void to ignore input or
+                    # self.decode__pass to pass input "as it" and rememeber to add it @ self.get_meta()
+                    decodeFunction = self.decode__pass
+                    #decodeFunction = self.decode__void
 
-            try:
-                name, data = decodeFunction(key, col)
-            except TypeError as e:
-                self.log('@decodeRow => decode function failed:')
-                self.log('@decodeRow => {}'.format(sys.exc_info()[0]))
-                self.log('@decoderow => {}'.format(e))
-                self.log('@decodeRow => {}, {} = {}({}, {})'.format(name, data, decodeFunction, key, col))
-                #self.log_invalid_type(key, col)
-            if name:
-                new_row[name] = data
-                name, data = None, None
+                try:
+                    name, data = decodeFunction(key, col)
+                except TypeError as e:
+                    self.log('<multi-line error>')
+                    self.log('@decodeRow => decode function failed:')
+                    self.log('@decodeRow => {}'.format(sys.exc_info()[0]))
+                    self.log('@decoderow => {}'.format(e))
+                    self.log('@decodeRow => {}, {} = {}({}, {})'.format(name, data, decodeFunction, key, col))
+                    self.log('</multi-line error>')
+                    #self.log_invalid_type(key, col)
+                if name:
+                    new_row[name] = data
+                    name, data = None, None
         self.cache = {}
-        for col in self.extra_cols.keys():
-            new_row[col] = self.extra_cols[col]
+        # append cols
+        for col in self.append_cols.keys():
+            new_row[col] = self.append_cols[col]
+
+        delta = self.array_compare(self.get_meta().keys(), new_row.keys())
+        if not delta == '':
+            print(delta)
+            sys.exit()
         return new_row
     #
     # abstract decoders
@@ -108,6 +150,54 @@ class decoder(object):
 
     def decode__pass(self, key, data):
         return key, data
+
+    def decode__diagnosis(self, key, data, prefix='primary'):
+        prefix = prefix + '_'
+
+        # Set empty result, and then try to fill it
+        self.append_cols[prefix + 'code_0'] = None
+        self.append_cols[prefix + 'code_1'] = None
+        self.append_cols[prefix + 'code_2'] = None
+        self.append_cols[prefix + 'code_3'] = None
+        self.append_cols[prefix + 'code_4'] = None
+        self.append_cols[prefix + 'code_5'] = None
+
+        # Some strings end with one or more Xs
+        def remove_last_x(string):
+            if string[-1] == 'X':
+                return remove_last_x(string[:-1])
+            else:
+                return string
+
+        # go trough diagnoses and set them on append_cols
+        def diag_lookup_and_set(data):
+            # not levels
+            ignore_cols = ['source', 'level']
+            # set upper level diagnoses
+            for d_key in self.maps['diagnoses'][data]:
+                if not d_key in ignore_cols:
+                    self.append_cols[prefix + d_key] = self.maps['diagnoses'][data][d_key]
+            # set the actual diagnosis
+            tmp_key = '{}code_{}'.format(prefix, self.maps['diagnoses'][data]['level'])
+            self.append_cols[tmp_key] = data
+
+        if type(data) == str:
+            data = data.strip()
+            data = data.upper()
+            data = remove_last_x(data)
+            # Found full code
+            if data in self.maps['diagnoses']:
+                diag_lookup_and_set(data)
+            # Once more try with one less character on code
+            elif not (data in self.maps['diagnoses']) and ((len(data) == 4) and (data[:-1] in self.maps['diagnoses'])):
+                data = data[:-1]
+                diag_lookup_and_set(data)
+            else:
+                self.log('Diagnosis: {} not in the map'.format(data))
+                #pk.dump(data, open('not_in_map.pk', 'wb'))
+
+        return False, None
+
 
     def decode__int(self, key, column, null_values=None):
         # null values init
@@ -129,31 +219,95 @@ class decoder(object):
             self.log_invalid_type(key, column)
             return key, None
 
-    def decode__date(self, key, year, cached_month, cached_day, cached_century=None):
+    def decode__day(self, key, day, name):
+        # Define a invalid day response
+        def return_none(day, name):
+            #self.log('Invalid "{}": {}, assingining 15'.format(name, day))
+            self.cache[name + '_day'] = 15
+            self.append_cols[name + '_accuracy'] = 'Month'
+        # Try to make it in
+        try:
+            day = int(day)
+        except:
+            return_none(day, name)
+        # Fail on known null values
+        if day in [99, 0]:
+            return_none(day, name)
+        else:
+            self.cache[name + '_day'] = day
+        # Return something
+        return False, None
+
+    def decode__month(self, key, month, name):
+        # Define a invalid day response
+        def return_none(month, name):
+            #self.log('Invalid "{}": {}, assingining 15'.format(name, month))
+            self.cache[name + '_month'] = 6
+            self.append_cols[name + '_accuracy'] = 'Year'
+        # Try to make it in
+        try:
+            month = int(month)
+        except:
+            return_none(month, name)
+        # Fail on known null values
+        if month in [99, 0]:
+            return_none(month, name)
+        else:
+            self.cache[name + '_month'] = month
+        # Return something
+        return False, None
+
+    def decode__year(self, key, year, cached_month, cached_day, cached_century=None):
+        # self.log('Building date: key={}, year={}, cached_month={}, cached_day={}, cached_century={}'.format(
+        #     key,
+        #     year,
+        #     self.cache[cached_month],
+        #     self.cache[cached_day],
+        #     cached_century
+        # ), True)
+        local_nat = pd.NaT
         if type(year) != str:
             if np.isnan(year):
-                return key, None
-            if int(year) == 0:
-                return key, None
+                self.append_cols[key + '_accuracy'] = None
+                return key, local_nat
         if cached_century:
             try:
-                year = self.cache['born_century'] * 100 + int(year)
+                year = self.cache[cached_century] * 100 + int(year)
             except:
                 self.log('Can\'t build a year from {}*100 + int({})'.format(self.cache['born_century'], year))
         else:
             year = int(year)
+
+
+        if year in [0, 9999, 99, 9]:
+            self.append_cols[key + '_accuracy'] = None
+            self.log('Builded date ({}): {} ({})'.format(local_nat, key, type(local_nat)))
+            return key, local_nat
+
         try:
-            date = datetime.date(year, self.cache[cached_month], self.cache[cached_day])
+            #date = datetime.datetime(year, self.cache[cached_month], self.cache[cached_day])
+            #date = pd.to_datetime(date, errors='coerce')
+            date = pd.to_datetime('{}-{}-{}'.format(year, self.cache[cached_month], self.cache[cached_day]),
+                                  format='%Y-%m-%d',
+                                  errors='coerce')
         except:
-            self.log('Invalid date: datetime.date({}, {}, {})'.format(year,
+            self.log('Invalid date: datetime.datetime({}, {}, {}) at {}'.format(year,
                                                                  self.cache[cached_month],
-                                                                 self.cache[cached_day]))
-            date = None
+                                                                 self.cache[cached_day],
+                                                                 key))
+            self.append_cols[key + '_accuracy'] = None
+            date = local_nat
+
+        self.log('Builded date ({}): {} ({})'.format(date, key, type(date)))
         return key, date
 
     def decode__categorical(self, key, value, name, key_make_string=False, key_make_int=False, map_name=None, cat_from_map=False):
         if type(value) != str:
             if np.isnan(value):
+                return name, None
+        else:
+            # empty string
+            if not value.strip():
                 return name, None
         if map_name is None:
             map_name = name
@@ -161,14 +315,15 @@ class decoder(object):
             cat_name = map_name
         else:
             cat_name = name
-        try:
-            if key_make_int:
-                value = int(value)
-            if key_make_string:
-                value = str(value)
-            return name,\
-                pd.Categorical(self.maps[map_name].loc[value].value, dtype=self.categoricals[cat_name])
-        except:
+        if key_make_int:
+            value = int(value)
+        if key_make_string:
+            value = str(value)
+        if value in self.maps[map_name]:
+            return name, \
+                self.maps[map_name][value]
+                #pd.Categorical(self.maps[map_name][value], dtype=self.categoricals[cat_name]) #.codes[0]
+        else:
             self.log_invalid_type('{} ({}) '.format(name, key), value, map_name)
             return name, None
 
@@ -176,6 +331,8 @@ class decoder(object):
         if type(column) != str:
             if np.isnan(column):
                 return key, None
+        else:
+            column = column.lower()
         try:
             self.cache[key] = int(column)
             return self.decode__categorical(key, column, key, True, True, map_name='activity', cat_from_map=True)
@@ -187,7 +344,14 @@ class decoder(object):
         if type(column) != str:
             if np.isnan(column):
                 return key, None
+        else:
+            # empty string
+            if not column.strip():
+                return key, None
+            column = column.lower()
         if not cached_activity in self.cache:
+            return key, None
+        if self.cache[cached_activity] == 9:
             return key, None
         try:
             value = '{}.{}'.format(self.cache[cached_activity], column)
@@ -203,30 +367,24 @@ class decoder(object):
     #
     # fields decoders
     #
+
+    # bird_date
     def decode_dia_nac(self, key, column):
-        try:
-            self.cache['born_day'] = int(column)
-        except:
-            self.log('Invalid "born_day": {}, assingining 15'.format(column))
-            self.cache['born_day'] = 15
-            self.extra_cols['bird_date_accuracy'] = 'Month'
-        return False, None
+        return self.decode__day(key, column, 'bird_date')
 
     def decode_mes_nac(self, key, column):
-        try:
-            self.cache['born_month'] = int(column)
-        except:
-            self.log('Invalid "born_month": {}, assingining 6'.format(column))
-            self.cache['born_month'] = 6
-            self.extra_cols['bird_date_accuracy'] = 'Year'
-        return False, None
+        return self.decode__month(key, column, 'bird_date')
 
     def decode_ano1_nac(self, key, column):
-        self.cache['born_century'] = int(column)
+        self.cache['bird_date_century'] = int(column)
         return False, None
 
     def decode_ano2_nac(self, key, column):
-        return self.decode__date('bird_date', column, 'born_month', 'born_day', 'born_century')
+        return self.decode__year('bird_date', column, 'bird_date_month', 'bird_date_day', 'bird_date_century')
+
+    def decode_ano_nac(self, key, column):
+        return self.decode__year('bird_date', column, 'bird_date_month', 'bird_date_day')
+    # /bird_date
 
     def decode_sexo(self, key, column):
         return self.decode__categorical(key, column, 'assigned_sex', True, True)
@@ -271,7 +429,7 @@ class decoder(object):
         return self.decode__categorical(key, column, 'formal_education_level', True, True)
 
     def decode_nive_ins_m(self, key, column):
-        return self.decode__categorical(key, column, 'formal_education_level', True, True)
+        return self.decode__categorical(key, column, 'mother_formal_education_level', True, True, 'formal_education_level', True)
 
     def decode_nivel_m(self, key, column):
         return self.decode__categorical(key, column, 'mother_formal_education_level', True, True, 'formal_education_level', True)
@@ -310,68 +468,85 @@ class decoder(object):
     def decode_categ_ma(self, key, column):
         return self.decode_categ_m(key, column)
 
+    def decode_categ_p(self, key, column):
+        return self.decode__categorical(key, column, 'father_occupational_category', True, True,
+                                        map_name='occupational_category', cat_from_map=True)
+
+    def decode_catego_p(self, key, column):
+        return self.decode_categ_p(key, column)
+
+    def decode_categ_pa(self, key, column):
+        return self.decode_categ_p(key, column)
+
     def decode_dia_def(self, key, column):
-        try:
-            self.cache['deacease_day'] = int(column)
-            return False, None
-        except:
-            self.log_invalid_type(key, column)
-            return False, None
+        return self.decode__day(key, column, 'deacease_date')
 
     def decode_def_dia(self, key, column):
-        return self.decode_dia_def(key, column)
+        return self.decode__day(key, column, 'deacease_date')
 
     def decode_mes_def(self, key, column):
-        try:
-            self.cache['deacease_month'] = int(column)
-            return False, None
-        except:
-            self.log_invalid_type(key, column)
-            return False, None
+        return self.decode__month(key, column, 'deacease_date')
 
     def decode_def_mes(self, key, column):
-        return self.decode_mes_def( key, column)
+        return self.decode__month(key, column, 'deacease_date')
+
+    def decode_cer_mes(self, key, column):
+        return self.decode__month(key, column, 'deacease_date')
 
     def decode_ano_def(self, key, column):
-        return self.decode__date('bird_date', column, 'deacease_month', 'deacease_day')
+        return self.decode__year('deacease_date', column, 'deacease_date_month', 'deacease_date_day')
+
+    def decode_cer_ano(self, key, column):
+        return self.decode__year('deacease_date', column, 'deacease_date_month', 'deacease_date_day')
 
     def decode_def_ano(self, key, column):
-        return self.decode_ano_def(key, column)
+        return self.decode__year('deacease_date', column, 'deacease_date_month', 'deacease_date_day')
 
     def decode_lugar_def(self, key, column):
-        # Remove full address (never should have been public)
-        if self.dataframe_year == 2011:
-            return self.decode__void()
-        else:
-            return self.decode__categorical(key, column, 'decease_place', True, True)
+        return self.decode__categorical(key, column, 'decease_place', True, True)
+
+    def decode_glo_ocupa(self, key, column):
+        # Field only exists on 2011 dataset with 2444 unique values including:
+        # ESTILISTA, PANIFICADOR, JUBILADO, JUBILADA, DUEÑA DE CASA, LABORES DE CASA, SE DESCONOCE, etc.
+        return self.decode__void()
+
+    def decode_mv_lugar(self, key, column):
+        # Field inly exist on 2011 dataset, and it's empty.
+        return self.decode__void()
 
     def decode_def_local(self, key, column):
-        return self.decode_lugar_def(key, column)
+        return self.decode__categorical(key, column, 'decease_place', True, True)
 
     def decode_local_def(self, key, column):
-        return self.decode_lugar_def(key, column)
+        return self.decode__categorical(key, column, 'decease_place', True, True)
+
+    def decode_loca_def(self, key, column):
+        return self.decode__categorical(key, column, 'decease_place', True, True)
 
     def decode_reg_res(self, key, column):
-        return self.decode__categorical(key, column, 'region', True, True)
+        return self.decode__categorical(key, column, 'home_region', True, True, 'region', True)
 
     def decode_serv_res(self, key, column):
-        return self.decode__categorical(key, column, 'health_service', True, True)
+        return self.decode__categorical(key, column, 'home_health_service', True, True, 'health_service', True)
 
     def decode_res_serv(self, key, column):
-        return self.decode_serv_res(key, column)
+        return self.decode__categorical(key, column, 'home_health_service', True, True, 'health_service', True)
 
     def decode_res_reg(self, key, column):
-        return self.decode_serv_res(key, column)
+        return self.decode__categorical(key, column, 'home_region', True, True, 'region', True)
 
     def decode_comuna(self, key, column):
-        if self.dataframe_year <= 1999:
+        if self.dataframe_year <= 2000:
             return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_1812_1999')
-        elif self.dataframe_year >= 2000 and self.dataframe_year <= 2007:
+        elif self.dataframe_year > 2000 and self.dataframe_year <= 2007:
             return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2000_2007')
         elif self.dataframe_year >= 2008 and self.dataframe_year <= 2009:
             return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2008_2009')
         elif self.dataframe_year >= 2010 :
             return self.decode__categorical(key, column, 'comune', False, True, map_name='comunes_2010_2018')
+
+    def decode_cod_comuna(self, key, column):
+        return self.decode_comuna(key, column)
 
     def decode_urb_rural(self, key, column):
         return self.decode__categorical(key, column, 'territory_class', True, True)
@@ -379,16 +554,16 @@ class decoder(object):
     def decode_urba_rural(self, key, column):
         return self.decode__categorical(key, column, 'territory_class', True, True)
 
+    def decode_area(self, key, column):
+        return self.decode__categorical(key, column, 'territory_class', True, True)
+
+    # Diagnoses
     def decode_diag1(self, key, column):
-        code = column.lower()
-        def remove_x(code):
-            if(code[-1] == 'x'):
-                code = code[0:-1]
-        #print('{} {}'.format(column, type(column)))
-        return self.decode__void()
+        return self.decode__diagnosis(key, column)
 
     def decode_diag2(self, key, column):
-        return self.decode__void()
+        return self.decode__diagnosis(key, column, 'secondary')
+    # /Diagnoses
 
     def decode_at_medica(self, key, column):
         return self.decode__categorical(key, column, 'medical_attention', True, True)
@@ -444,35 +619,25 @@ class decoder(object):
     def decode_part_abort(self, key, column):
         return self.decode_parto_abor(key, column)
 
+    # mother_last_bird
     def decode_dia_parto(self, key, column):
-        try:
-            self.cache['mother_last_bird_day'] = int(column)
-        except:
-            #self.log('Invalid "mother_last_bird_day": {}, assingining 15'.format(column))
-            self.cache['mother_last_bird_day'] = 15
-            self.extra_cols['mother_last_bird_accuracy'] = 'Month'
-        return False, None
+        return self.decode__day(key, column, 'mother_last_bird')
 
     def decode_part_dia(self, key, column):
-        return self.decode_dia_parto(key, column)
+        return self.decode__day(key, column, 'mother_last_bird')
 
     def decode_mes_parto(self, key, column):
-        try:
-            self.cache['mother_last_bird_month'] = int(column)
-        except:
-            #self.log('Invalid "born_month": {}, assingining 6'.format(column))
-            self.cache['mother_last_bird_month'] = 6
-            self.extra_cols['mother_last_bird_accuracy'] = 'Year'
-        return False, None
+        return self.decode__month(key, column, 'mother_last_bird')
 
     def decode_part_mes(self, key, column):
-        return self.decode_mes_parto(key, column)
+        return self.decode__month(key, column, 'mother_last_bird')
 
     def decode_ano_parto(self, key, column):
-        return self.decode__date('bird_date', column, 'mother_last_bird_month', 'mother_last_bird_day')
+        return self.decode__year('mother_last_bird', column, 'mother_last_bird_month', 'mother_last_bird_day')
 
     def decode_part_ano(self, key, column):
-        return self.decode_ano_parto(key, column)
+        return self.decode__year('mother_last_bird', column, 'mother_last_bird_month', 'mother_last_bird_day')
+    # / mother_last_bird
 
     def decode_activ_m(self, key, column):
         return self.decode__actividad('mother_activity', column)
@@ -487,22 +652,26 @@ class decoder(object):
         return self.decode__actividad('father_activity', column)
 
     def decode_ocupa_m(self, key, column):
-        return self.decode__ocupation('ocupation', column, 'mother_activity')
+        return self.decode__ocupation('mother_ocupation', column, 'mother_activity')
 
     def decode_ocupa_ma(self, key, column):
-        return self.decode__ocupation('ocupation', column, 'mother_activity')
+        return self.decode__ocupation('mother_ocupation', column, 'mother_activity')
 
     def decode_ocupa_p(self, key, column):
-        return self.decode__ocupation('ocupation', column, 'father_activity')
+        return self.decode__ocupation('father_ocupation', column, 'father_activity')
 
     def decode_ocupac_p(self, key, column):
-        return self.decode__ocupation('ocupation', column, 'father_activity')
+        return self.decode__ocupation('father_ocupation', column, 'father_activity')
 
     def decode_ocupa_pa(self, key, column):
-        return self.decode__ocupation('ocupation', column, 'father_activity')
+        return self.decode__ocupation('father_ocupation', column, 'father_activity')
 
     def decode_origin(self, key, column):
         return self.decode__pass(key, column)
+
+    def decode_fund_causa(self, key, column):
+        return self.decode__categorical(key, column, 'diagnosis_source', True, True)
+
 
     #
     # utilities
@@ -516,3 +685,151 @@ class decoder(object):
 
     def log_invalid_type(self, key, value, map_name=None):
         self.log('Invalid value for {}: "{}" {} (map: {})'.format(key, value, type(value), map_name))
+
+    def array_compare(self, expecteds, actuals):
+        result = ''
+        for expected in expecteds:
+            if not expected in actuals:
+                result += "missing: {}\n".format(expected)
+        for actual in actuals:
+            if not actual in expecteds:
+                result += "unexpected: {}\n".format(actual)
+        return result
+
+    def build_categoricals(self, raw_df):
+        # This could be optimized, but for now, don't care to copy metada for each category
+        meta = self.get_meta()
+        for field in meta:
+            if meta[field] == 'category':
+                raw_df[field] = pd.Series(dtype=meta[field])
+
+    def build_datetime(self, raw_df):
+        # This could be optimized, but for now, don't care to copy metada for each year
+        meta = self.get_meta()
+        for field in meta:
+            if meta[field] == 'datetime64[ns]':
+                raw_df[field] = pd.Series(dtype=meta[field])
+
+    def get_meta_raw(self):
+        return {
+            'comune': 'object',
+            'diagnosis_source': 'object',
+            'toddler': 'object',
+            'bird_date': 'datetime64',
+            'assigned_sex': 'object',
+            'marital_status': 'object',
+            'age_type': 'object',
+            'age_amount': 'int64',
+            'formal_education_years': 'int64',
+            'formal_education_level': 'object',
+            'activity': 'object',
+            'ocupation': 'object',
+            'occupational_category': 'object',
+            'deacease_date': 'datetime64',
+            'decease_place': 'object',
+            'home_region': 'object',
+            'home_health_service': 'object',
+            'territory_class': 'object',
+            'medical_attention': 'object',
+            'reporter_role': 'object',
+            'born_weight_grams': 'int64',
+            'gestation_age_weeks': 'int64',
+            'nutrition_status': 'object',
+            'mother_age': 'int64',
+            'mother_marital_status': 'object',
+            'mother_alive_childs': 'int64',
+            'mother_deaceased_childs': 'int64',
+            'mother_stillbirth_childs': 'int64',
+            'mother_total_childs': 'int64',
+            'bird_abortion': 'object',
+            'mother_last_bird': 'datetime64',
+            'mother_activity': 'object',
+            'mother_ocupation': 'object',
+            'mother_occupational_category': 'object',
+            'mother_formal_education_years': 'int64',
+            'mother_formal_education_level': 'object',
+            'father_age': 'int64',
+            'father_activity': 'object',
+            'father_ocupation': 'object',
+            'father_occupational_category': 'object',
+            'father_formal_education_years': 'int64',
+            'father_formal_education_level': 'object',
+            'bird_date_accuracy': 'object',
+            'mother_last_bird_accuracy': 'object',
+            'deacease_date_accuracy': 'object',
+            'primary_code_0': 'object',
+            'primary_code_1': 'object',
+            'primary_code_2': 'object',
+            'primary_code_3': 'object',
+            'primary_code_4': 'object',
+            'primary_code_5': 'object',
+            'secondary_code_0': 'object',
+            'secondary_code_1': 'object',
+            'secondary_code_2': 'object',
+            'secondary_code_3': 'object',
+            'secondary_code_4': 'object',
+            'secondary_code_5': 'object',
+            }
+
+    def get_meta(self):
+        return {'bird_date': 'datetime64',
+                'bird_date_accuracy': str, # TODO: move to categorical
+                'assigned_sex': self.categoricals['assigned_sex'],
+                'marital_status': self.categoricals['marital_status'],
+                'age_type': self.categoricals['age_type'],
+                'age_amount': float,
+                'formal_education_years': float,
+                'formal_education_level': self.categoricals['formal_education_level'],
+                'activity': self.categoricals['activity'],
+                'ocupation': self.categoricals['ocupation'],
+                'occupational_category': self.categoricals['occupational_category'],
+                'deacease_date': 'datetime64',
+                'deacease_date_accuracy': str,
+                'decease_place': self.categoricals['decease_place'],
+                'comune': self.categoricals['comune'],
+                #'region': self.categoricals['region'],
+                'home_region': self.categoricals['region'],
+                #'health_service': self.categoricals['health_service'],
+                'home_health_service': self.categoricals['health_service'],
+                'territory_class': self.categoricals['territory_class'],
+                'diagnosis_source': self.categoricals['diagnosis_source'],
+                'medical_attention': self.categoricals['medical_attention'],
+                'reporter_role': self.categoricals['reporter_role'],
+                'toddler': self.categoricals['toddler'], # Can't be bool because could be None
+                'born_weight_grams': float,
+                'gestation_age_weeks': float,
+                'nutrition_status': self.categoricals['nutrition_status'],
+                'mother_age': float,
+                'mother_marital_status': self.categoricals['marital_status'],
+                'mother_alive_childs': float,
+                'mother_deaceased_childs': float,
+                'mother_stillbirth_childs': float,
+                'mother_total_childs': float,
+                'bird_abortion': self.categoricals['bird_abortion'], # Can't be bool because could be None
+                'mother_last_bird': 'datetime64',
+                'mother_last_bird_accuracy': str, # TODO: move to categorical
+                'mother_activity': self.categoricals['activity'],
+                'mother_ocupation': self.categoricals['ocupation'],
+                'mother_occupational_category': self.categoricals['occupational_category'],
+                'mother_formal_education_years': float,
+                'mother_formal_education_level': self.categoricals['formal_education_level'],
+                'father_age': float,
+                'father_activity': self.categoricals['activity'],
+                'father_ocupation': self.categoricals['ocupation'],
+                'father_occupational_category': self.categoricals['occupational_category'],
+                'father_formal_education_years': float,
+                'father_formal_education_level': self.categoricals['formal_education_level'],
+                'origin': str, # TODO: move to categorical
+                'primary_code_0': str,
+                'primary_code_1': str,
+                'primary_code_2': str,
+                'primary_code_3': str,
+                'primary_code_4': str,
+                'primary_code_5': str,
+                'secondary_code_0': str,
+                'secondary_code_1': str,
+                'secondary_code_2': str,
+                'secondary_code_3': str,
+                'secondary_code_4': str,
+                'secondary_code_5': str,
+                }
