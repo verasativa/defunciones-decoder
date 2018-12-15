@@ -16,13 +16,18 @@ class decoder(object):
         self.cache = {}
         self.dataframe_year = None
         self.load_maps()
+        # Inicialize always
         self.prepend_cols = {
             'comune':           None,
             'diagnosis_source': None,
             'origin':           'local',
             # Missing on 2016
-            'toddler': None,
+            'toddler':          None,
+            # Missing on 2001
+            'mother_ocupation': None,
+            'father_ocupation': None,
         }
+        # add if not precent
         self.append_cols = {
             'bird_date_accuracy':        'day',
             'mother_last_bird_accuracy': 'day',
@@ -213,7 +218,8 @@ class decoder(object):
             return key, None
 
         try:
-            return key, int(column)
+            #return key, int(column)
+            return key, np.float64(column)
         except TypeError as e:
             self.log('Type error: {}'.format(e))
             self.log_invalid_type(key, column)
@@ -596,10 +602,10 @@ class decoder(object):
         return self.decode_est_civ_m(key, column)
 
     def decode_ocupacion(self, key, column):
-        return self.decode__ocupation('ocupation', column, self.cache['activity'])
+        return self.decode__ocupation('ocupation', column, 'activity')
 
     def decode_ocupa(self, key, column):
-        return self.decode__ocupation('ocupation', column, self.cache['activity'])
+        return self.decode__ocupation('ocupation', column, 'activity')
 
     def decode_hij_vivos(self, key, column):
         return self.decode__int('mother_alive_childs', column)
@@ -706,16 +712,19 @@ class decoder(object):
     def build_datetime(self, raw_df):
         # This could be optimized, but for now, don't care to copy metada for each year
         meta = self.get_meta()
+
         for field in meta:
             if meta[field] == 'datetime64[ns]':
                 raw_df[field] = pd.Series(dtype=meta[field])
 
+    # Without categoricals
     def get_meta_raw(self):
         return {
             'comune': 'object',
             'diagnosis_source': 'object',
+            'origin': 'object',
             'toddler': 'object',
-            'bird_date': 'datetime64',
+            'bird_date': 'datetime64[ns]',
             'assigned_sex': 'object',
             'marital_status': 'object',
             'age_type': 'object',
@@ -725,7 +734,7 @@ class decoder(object):
             'activity': 'object',
             'ocupation': 'object',
             'occupational_category': 'object',
-            'deacease_date': 'datetime64',
+            'deacease_date': 'datetime64[ns]',
             'decease_place': 'object',
             'home_region': 'object',
             'home_health_service': 'object',
@@ -742,7 +751,7 @@ class decoder(object):
             'mother_stillbirth_childs': 'int64',
             'mother_total_childs': 'int64',
             'bird_abortion': 'object',
-            'mother_last_bird': 'datetime64',
+            'mother_last_bird': 'datetime64[ns]',
             'mother_activity': 'object',
             'mother_ocupation': 'object',
             'mother_occupational_category': 'object',
@@ -772,7 +781,7 @@ class decoder(object):
             }
 
     def get_meta(self):
-        return {'bird_date': 'datetime64',
+        return {'bird_date': 'datetime64[ns]',
                 'bird_date_accuracy': str, # TODO: move to categorical
                 'assigned_sex': self.categoricals['assigned_sex'],
                 'marital_status': self.categoricals['marital_status'],
@@ -783,7 +792,7 @@ class decoder(object):
                 'activity': self.categoricals['activity'],
                 'ocupation': self.categoricals['ocupation'],
                 'occupational_category': self.categoricals['occupational_category'],
-                'deacease_date': 'datetime64',
+                'deacease_date': 'datetime64[ns]',
                 'deacease_date_accuracy': str,
                 'decease_place': self.categoricals['decease_place'],
                 'comune': self.categoricals['comune'],
@@ -806,7 +815,7 @@ class decoder(object):
                 'mother_stillbirth_childs': float,
                 'mother_total_childs': float,
                 'bird_abortion': self.categoricals['bird_abortion'], # Can't be bool because could be None
-                'mother_last_bird': 'datetime64',
+                'mother_last_bird': 'datetime64[ns]',
                 'mother_last_bird_accuracy': str, # TODO: move to categorical
                 'mother_activity': self.categoricals['activity'],
                 'mother_ocupation': self.categoricals['ocupation'],

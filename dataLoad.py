@@ -107,7 +107,7 @@ class dataLoad(object):
 
     def load_dbf(self, file):
         dbf = Dbf5(self.base_path + file)
-        return dbf.to_dataframe()
+        return dbf.to_dataframe(na='none')
 
     def load_csv(self, file):
         # TODO: check "NULL" values
