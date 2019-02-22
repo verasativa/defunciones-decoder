@@ -46,7 +46,8 @@ class dataLoad(object):
         file_list = os.listdir(self.base_path)
         ignored_files = ['.floyddata', '.DS_Store', '_old', '_ref']
         for ignored_file in ignored_files:
-            file_list.remove(ignored_file)
+            if ignored_file in file_list:
+                file_list.remove(ignored_file)
         # Iter trough files
         #print(file_list)
         #for file in tqdm(file_list, unit='file'):
