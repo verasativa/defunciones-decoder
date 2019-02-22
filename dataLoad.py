@@ -8,7 +8,20 @@ from time import gmtime, strftime
 from tqdm.auto import tqdm
 tqdm.pandas(unit='Rows')
 import pickle as pk
+import numpy as np
 
+def nan_resilent_extract_dtype(data_type):
+    # Note, this list is surely incomplete. But, I only had one .mdb file
+    # at the time of creation. If you see a new data-type, patch-pull or just
+    # open an issue.
+    data_type = data_type.lower()
+    if data_type.startswith('double'):
+        return np.float_
+    elif data_type.startswith('long'):
+        return np.float_
+    else:
+        return None
+mdb._extract_dtype = nan_resilent_extract_dtype
 
 class dataLoad(object):
     def __init__(self, base_path, debug=False, apply_meta=False, use_dask = False):
