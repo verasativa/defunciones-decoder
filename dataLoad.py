@@ -89,33 +89,34 @@ class dataLoad(object):
             if continue_var:
                 # Data load
                 cdf = load_function(file)
-                self.log('Loaded ({},{}): {}'.format(len(cdf.columns), len(cdf), file), True)
+                self.log('Readed ({},{}): {}'.format(len(cdf.columns), len(cdf), file), True)
                 self.total_rows_in += len(cdf)
                 cdf['origin'] = file
 
                 # Build series of dtype wanted
-                self.decoder.build_datetime(cdf)
+                # self.decoder.build_datetime(cdf)
 
                 if self.use_dask:
-                    cdf = dask.dataframe.from_pandas(cdf, npartitions=self.dask_npartitions)
+                    #cdf = dask.dataframe.from_pandas(cdf, npartitions=self.dask_npartitions)
+                    cdf = dask.dataframe.from_pandas(cdf, chunksize=200000)
 
                 if self.sample_fraction:
                     #cdf = cdf.sample(frac=self.sample_fraction, random_state=31173)
                     cdf = cdf.sample(frac=self.sample_fraction)
 
-                cdf = cdf.apply(self.decoder.decode___row, axis=1, meta=self.decoder.get_meta_raw())
+                #cdf = cdf.apply(self.decoder.decode___row, axis=1, meta=self.decoder.get_meta_raw())
                 #cdf = cdf.apply(self.decoder.decode___row, axis=1)
 
-                if self.use_dask:
-                    cdf.compute()
+                #if self.use_dask:
+                    #cdf.compute()
 
-                if self.apply_meta:
-                    cdf = cdf.astype(self.decoder.get_meta())
+                #if self.apply_meta:
+                    #cdf = cdf.astype(self.decoder.get_meta())
 
-                self.log('Decoded ({},{}): {}'.format(len(cdf.columns), len(cdf), file), True)
+                self.log('Loaded ({},{}): {}'.format(len(cdf.columns), len(cdf), file), True)
                 self.total_rows_out += len(cdf)
                 self.defunciones.append(cdf)
-                self.log('columns comparison: {}'.format(self.col_compare(cdf.columns)))
+                #self.log('columns comparison: {}'.format(self.col_compare(cdf.columns)))
         else:
             self.log(file + ' Not supported yet')
 
