@@ -20,7 +20,6 @@ class decoder(object):
         self.prepend_cols = {
             'comune':           None,
             'diagnosis_source': None,
-            'origin':           'local',
             # Missing on 2016
             'toddler':          None,
             # Missing on 2001
@@ -28,11 +27,12 @@ class decoder(object):
             'father_ocupation': None,
         }
         # add if not precent
-        self.append_cols = {
+        self.append_cols_base = {
             'bird_date_accuracy':        'day',
             'mother_last_bird_accuracy': 'day',
             'deacease_date_accuracy': 'day',
         }
+        self.append_cols = self.append_cols_base.copy()
         # Ignored to decode
         self.pre_build_cols = [
             'bird_date',
@@ -44,7 +44,7 @@ class decoder(object):
         return self.categoricals
 
     def set_year(self, year):
-        self.dataframe_year = int(year)
+        self.dataframe_year = int(float(year))
 
     def load_maps(self):
         self.load_maps_general()
@@ -68,7 +68,7 @@ class decoder(object):
 
     def load_maps_comunes(self):
         comunes = pd.read_excel(
-            self.base_path + 'División-Político-Administrativa-y-Servicios-de-Salud-Histórico.xls',
+            self.base_path + 'División-Político-Administrativa-y-Servicios-de-Salud-Histórico.xls',
             na_values='Ignorada')
         comunes.drop(columns=comunes.columns[5:], inplace=True)
         comunes.rename(columns={'Nombre Comuna': 'value'}, inplace=True)
@@ -109,10 +109,12 @@ class decoder(object):
         # prepend cols
         for col in self.prepend_cols.keys():
             new_row[col] = self.prepend_cols[col]
+        # set the year
+        self.dataframe_year = int(row['origin'][:4])
         # run decode_* functions to each column name
         for key,col in row.iteritems():
             key = key.lower()
-            if not key in self.pre_build_cols:
+            if pd.notnull(col):
                 try:
                     decodeFunction = getattr(self, 'decode_' + key)
                 except AttributeError:
@@ -137,15 +139,27 @@ class decoder(object):
                 if name:
                     new_row[name] = data
                     name, data = None, None
+            else:
+                pass
+                #self.log('Ignoring col: {} @ {}, because its empty'.format(key, self.dataframe_year))
         self.cache = {}
         # append cols
         for col in self.append_cols.keys():
             new_row[col] = self.append_cols[col]
+        self.append_cols = self.append_cols_base.copy()
 
-        delta = self.array_compare(self.get_meta().keys(), new_row.keys())
-        if not delta == '':
-            print(delta)
-            sys.exit()
+        #if type(new_row['deacease_date']) == int:
+        #    new_row['deacease_date'] = pd.to_datetime(new_row['deacease_date'])
+
+        self.forcce_datetime_fields(new_row)
+
+        #self.log('deacease_date: {} => {} '.format(new_row['deacease_date'], type(new_row['deacease_date'])))
+        # Not necesary without dask
+        #
+        # delta = self.array_compare(self.get_meta().keys(), new_row.keys())
+        # if not delta == '':
+        #     print(delta)
+        #     sys.exit()
         return new_row
     #
     # abstract decoders
@@ -233,7 +247,7 @@ class decoder(object):
             self.append_cols[name + '_accuracy'] = 'Month'
         # Try to make it in
         try:
-            day = int(day)
+            day = int(float(day))
         except:
             return_none(day, name)
         # Fail on known null values
@@ -252,7 +266,7 @@ class decoder(object):
             self.append_cols[name + '_accuracy'] = 'Year'
         # Try to make it in
         try:
-            month = int(month)
+            month = int(float(month))
         except:
             return_none(month, name)
         # Fail on known null values
@@ -273,38 +287,43 @@ class decoder(object):
         # ), True)
         local_nat = pd.NaT
         if type(year) != str:
-            if np.isnan(year):
+            if pd.isnull(year):
                 self.append_cols[key + '_accuracy'] = None
                 return key, local_nat
         if cached_century:
             try:
-                year = self.cache[cached_century] * 100 + int(year)
+                year = self.cache[cached_century] * 100 + int(float(year))
             except:
                 self.log('Can\'t build a year from {}*100 + int({})'.format(self.cache['born_century'], year))
+                return key, local_nat
         else:
-            year = int(year)
+            year = int(float(year))
 
 
         if year in [0, 9999, 99, 9]:
             self.append_cols[key + '_accuracy'] = None
-            self.log('Builded date ({}): {} ({})'.format(local_nat, key, type(local_nat)))
+            self.log('Builded date ({}): {} ({}) => {}-{}-{}'.format(local_nat, key, type(local_nat),
+                                                                     year,
+                                                                     self.cache[cached_month],
+                                                                     self.cache[cached_day])
+                     )
             return key, local_nat
 
+        formated_date = '{0}{1:02d}{2:02d}'.format(year, self.cache[cached_month], self.cache[cached_day])
         try:
             #date = datetime.datetime(year, self.cache[cached_month], self.cache[cached_day])
             #date = pd.to_datetime(date, errors='coerce')
-            date = pd.to_datetime('{}-{}-{}'.format(year, self.cache[cached_month], self.cache[cached_day]),
-                                  format='%Y-%m-%d',
-                                  errors='coerce')
+            date = pd.to_datetime(formated_date,
+                                  format='%Y%m%d',
+                                  errors='raise')
         except:
-            self.log('Invalid date: datetime.datetime({}, {}, {}) at {}'.format(year,
-                                                                 self.cache[cached_month],
-                                                                 self.cache[cached_day],
+            self.log('Invalid date: datetime.datetime({}) at {}'.format(formated_date,
                                                                  key))
             self.append_cols[key + '_accuracy'] = None
             date = local_nat
 
-        self.log('Builded date ({}): {} ({})'.format(date, key, type(date)))
+        # if int(date) < 0:
+        #     self.log('Builded date ({}) from {}'.format(date, formated_date))
         return key, date
 
     def decode__categorical(self, key, value, name, key_make_string=False, key_make_int=False, map_name=None, cat_from_map=False):
@@ -322,7 +341,7 @@ class decoder(object):
         else:
             cat_name = name
         if key_make_int:
-            value = int(value)
+            value = int(float(value)) #
         if key_make_string:
             value = str(value)
         if value in self.maps[map_name]:
@@ -340,7 +359,7 @@ class decoder(object):
         else:
             column = column.lower()
         try:
-            self.cache[key] = int(column)
+            self.cache[key] = int(float(column))
             return self.decode__categorical(key, column, key, True, True, map_name='activity', cat_from_map=True)
         except:
             self.log_invalid_type(key, column)
@@ -382,7 +401,7 @@ class decoder(object):
         return self.decode__month(key, column, 'bird_date')
 
     def decode_ano1_nac(self, key, column):
-        self.cache['bird_date_century'] = int(column)
+        self.cache['bird_date_century'] = int(float(column))
         return False, None
 
     def decode_ano2_nac(self, key, column):
@@ -484,6 +503,7 @@ class decoder(object):
     def decode_categ_pa(self, key, column):
         return self.decode_categ_p(key, column)
 
+    # deacease date
     def decode_dia_def(self, key, column):
         return self.decode__day(key, column, 'deacease_date')
 
@@ -709,13 +729,17 @@ class decoder(object):
             if meta[field] == 'category':
                 raw_df[field] = pd.Series(dtype=meta[field])
 
-    def build_datetime(self, raw_df):
+    def forcce_datetime_fields(self, series):
         # This could be optimized, but for now, don't care to copy metada for each year
         meta = self.get_meta()
 
         for field in meta:
             if meta[field] == 'datetime64[ns]':
-                raw_df[field] = pd.Series(dtype=meta[field])
+                if field in series:
+                    #print(series[field])
+                    #print(type(series[field]))
+                    if type(series[field]) == int:
+                        series[field] = pd.to_datetime(int(series[field]))
 
     # Without categoricals
     def get_meta_raw(self):
