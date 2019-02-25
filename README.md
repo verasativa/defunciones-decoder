@@ -2,7 +2,7 @@
 ### Base de datos
 Este dataset contiente el total de las defunciones registradas por el [deis](http://www.deis.cl/bases-de-datos-defunciones/) en Chile desde 1998 a 2016. 
 #### Archivos
-En el directorio ```./output``` encontrarás los siguientes archivos:
+En el [data set final](https://www.floydhub.com/veras/datasets/defunciones) encontrarás los siguientes archivos:
 
  - ```defunciones-deis-1998-2016-parsed-1M.csv``` archivo principal que contiene los datos de defunciones en Chile desde 1998 a 2016
  - ```dtypes.json``` mapa del tipo de campos del archivo anterior (no es necesario, pero si trabajas en pandas, te ahorrará el trabajo de convertirlos con el código de ejemplo)
@@ -33,8 +33,6 @@ for field in date_fields:
     
 defunciones = pd.read_csv('defunciones-deis-1998-2016-parsed-1M.csv', dtype=read_dtypes, parse_dates=date_fields,index_col=0)
 ```
-#### Ejemplo de analisís en jupyter
-
 
 ### Origen y porqué
 Los datos originales provienen del [deis](http://www.deis.cl/bases-de-datos-defunciones/) y fueron argumentados con [códigos CIE-10 jerarquizados](https://github.com/verasativa/CIE-10). Estando los originales en distintos formatos, codificaciones y columnas, dificultaba analisís generales como el que se muestra en el ejemplo.
