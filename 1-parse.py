@@ -53,13 +53,15 @@ base_name = 'defunciones-deis-1998-2016-parsed-{}'.format(size(len(df)).replace(
 
 
 pdf.to_csv(save_path + base_name + '.csv', index=False)
-pdf.to_excel(save_path + base_name + '.xlsx', index=False)
+
+# too much memmory
+#pdf.to_excel(save_path + base_name + '.xlsx', index=False)
 
 
 # In[ ]:
 
 
-# Dtypes
+# Dtypes (you still need to edit this manually after)
 dtypes = {}
 
 for key in pdf.dtypes.to_dict().keys():
