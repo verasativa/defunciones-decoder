@@ -55,4 +55,5 @@ Para completar los requerimientos de software debes ejecutar ```./setup.sh``` y 
 #### Pull request / contrib
 Si mejoras algo, código o documentación, por favor no dudes en enviar un pull request y feliz lo incorporamos.
 ### Agradecimientos
-A Naren y Alessio de [floydhub](https://www.floydhub.com/) por donar 25hrs de servidores CPU2. 
+A Naren y Alessio de [floydhub](https://www.floydhub.com/) por donar 25hrs de servidores CPU2.  
+A la [Biblioteca Gabriela Mistral](http://www.nunoa.cl/index.php/municipio/unidades-municipales/direccion-de-desarrollo-comunitario/biblioteca-gabriela-mistral.html) donde realizó gran parte de este trabajo.
