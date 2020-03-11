@@ -34,6 +34,12 @@ for field in date_fields:
 defunciones = pd.read_csv('defunciones-deis-1998-2016-parsed-1M.csv', dtype=read_dtypes, parse_dates=date_fields,index_col=0)
 ```
 
+#### Investigaciones
+
+[Analizamos los diagnósticos primarios en defunciones de menores hasta 16 años, comparando la zona crítica bajo la contaminación del complejo industrial Quintero-Ventanas, contra el resto de Chile como control. Encontramos incidencias de malformaciones congénitas, deformidades y anomalías cromosómicas (CIE-10: Q00-Q99), 3.04 a 3.75 desviaciones estándar sobre el resto del país, con P-values de 0.0001 a 0.00002 en un millón de simulaciones, estimando un impacto de entre 29.73 a 37.8 muertes de menores en la zona crítica por sobre la norma nacional.](https://github.com/verasativa/zonacritica)
+
+__Si usas este dataset para alguna investigación, no dudes en hacer un PR de este archivo con tu abstract y link 😉🤓👩🏻‍💻👩🏻‍🔬__
+
 ### Origen y porqué
 Los datos originales provienen del [deis](http://www.deis.cl/bases-de-datos-defunciones/) y fueron argumentados con [códigos CIE-10 jerarquizados](https://github.com/verasativa/CIE-10). Estando los originales en distintos formatos, codificaciones y columnas, dificultaba análisis generales como el que se muestra en el ejemplo.
 
